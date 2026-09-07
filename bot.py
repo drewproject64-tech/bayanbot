@@ -1,9 +1,13 @@
 import asyncio
+import html
 import logging
 import os
 from collections import Counter
+from pathlib import Path
 
 from aiogram import Bot, Dispatcher, F
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
 from aiogram.filters import Command, CommandStart
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from dotenv import load_dotenv
@@ -11,32 +15,51 @@ from dotenv import load_dotenv
 load_dotenv()
 
 TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "")
+ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "").strip().lstrip("@")
 
 if not TOKEN:
-    raise RuntimeError("BOT_TOKEN is not set")
+    raise RuntimeError("BOT_TOKEN is not set. Add it to your .env file or hosting environment.")
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s",
+)
 
-bot = Bot(token=TOKEN)
+bot = Bot(
+    token=TOKEN,
+    default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+)
 dp = Dispatcher()
 
 WELCOME_TEXT = (
-    "👋 Welcome to <b>Bayan</b>!\n\n"
-    "Unscramble letters and discover possible words.\n\n"
-    "🔤 Send me mixed-up letters and I’ll find word combinations for you.\n\n"
-    "Example: <code>TEACH</code> → <b>CHEAT</b>"
+    "👋 <b>Welcome to Bayan!</b>\n\n"
+    "Bayan helps you rearrange mixed-up letters into possible words.\n\n"
+    "🔤 <b>Try this sample:</b>\n"
+    "Send: <code>TEACH</code>\n"
+    "Result: <b>CHEAT</b>\n\n"
+    "Send your letters below to get started."
+)
+
+HELP_TEXT = (
+    "❓ <b>How Bayan works</b>\n\n"
+    "1. Send mixed-up letters.\n"
+    "2. Bayan checks its word list.\n"
+    "3. Bayan returns possible words made from those letters.\n\n"
+    "<b>Sample:</b> <code>TEACH</code> → possible words such as <b>TEACH</b> and <b>CHEAT</b>.\n\n"
+    "Tip: use 2–15 letters for quick results."
 )
 
 
 def main_keyboard() -> InlineKeyboardMarkup:
-    buttons = [
-        [InlineKeyboardButton(text="🔤 Rearrange Word", callback_data="rearrange")],
-        [InlineKeyboardButton(text="❓ How to Use", callback_data="help")],
+    rows = [
+        [InlineKeyboardButton(text="🔤 Rearrange Letters", callback_data="rearrange")],
+        [InlineKeyboardButton(text="📖 How It Works", callback_data="help")],
     ]
     if ADMIN_USERNAME:
-        buttons.append([InlineKeyboardButton(text="💬 Contact Admin", url=f"https://t.me/{ADMIN_USERNAME.lstrip('@')}")])
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
+        rows.append(
+            [InlineKeyboardButton(text="💬 Contact Admin", url=f"https://t.me/{ADMIN_USERNAME}")]
+        )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def normalize_letters(text: str) -> str:
@@ -44,10 +67,12 @@ def normalize_letters(text: str) -> str:
 
 
 def load_word_list() -> set[str]:
-    paths = ["words.txt", "/usr/share/dict/words"]
+    dictionary_path = Path(__file__).with_name("words.txt")
+    paths = [dictionary_path, Path("/usr/share/dict/words")]
+
     for path in paths:
         try:
-            with open(path, "r", encoding="utf-8", errors="ignore") as file:
+            with path.open("r", encoding="utf-8", errors="ignore") as file:
                 words = {
                     line.strip().lower()
                     for line in file
@@ -55,8 +80,9 @@ def load_word_list() -> set[str]:
                 }
             if words:
                 return words
-        except FileNotFoundError:
+        except (FileNotFoundError, OSError):
             continue
+
     return set()
 
 
@@ -69,17 +95,18 @@ def find_words(letters: str, limit: int = 20) -> list[str]:
         return []
 
     target = Counter(clean)
-    candidates: list[str] = []
+    results: list[str] = []
 
     for word in WORD_LIST:
         if len(word) < 2 or len(word) > len(clean):
             continue
+
         counts = Counter(word)
         if all(counts[ch] <= target[ch] for ch in counts):
-            candidates.append(word)
+            results.append(word)
 
-    candidates.sort(key=lambda word: (-len(word), word))
-    return candidates[:limit]
+    results.sort(key=lambda word: (-len(word), word))
+    return results[:limit]
 
 
 @dp.message(CommandStart())
@@ -89,60 +116,70 @@ async def start_handler(message: Message) -> None:
 
 @dp.message(Command("help"))
 async def help_handler(message: Message) -> None:
-    await message.answer(
-        "❓ <b>How to use Bayan</b>\n\n"
-        "Send mixed-up letters, for example <code>TEACH</code>.\n"
-        "Bayan will return possible words that can be formed from those letters.\n\n"
-        "Tip: longer letter sets can produce more results."
-    )
+    await message.answer(HELP_TEXT, reply_markup=main_keyboard())
 
 
 @dp.callback_query(F.data == "help")
 async def help_callback(callback: CallbackQuery) -> None:
     await callback.answer()
-    await callback.message.edit_text(
-        "❓ <b>How to use Bayan</b>\n\n"
-        "Send mixed-up letters, for example <code>TEACH</code>.\n"
-        "Bayan will return possible words that can be formed from those letters.\n\n"
-        "Tip: longer letter sets can produce more results.",
-        reply_markup=main_keyboard(),
-    )
+    if callback.message:
+        await callback.message.edit_text(HELP_TEXT, reply_markup=main_keyboard())
 
 
 @dp.callback_query(F.data == "rearrange")
 async def rearrange_callback(callback: CallbackQuery) -> None:
     await callback.answer()
-    await callback.message.answer("🔤 Send me the mixed-up letters, for example <code>TEACH</code>.")
+    if callback.message:
+        await callback.message.answer(
+            "🔤 <b>Your turn!</b>\n\n"
+            "Send mixed-up letters, for example <code>TEACH</code>."
+        )
 
 
 @dp.message(F.text)
 async def word_handler(message: Message) -> None:
     text = message.text.strip()
+
     if text.startswith("/"):
         return
 
     clean = normalize_letters(text)
+
     if len(clean) < 2:
-        await message.answer("Please send at least 2 letters, such as <code>TEACH</code>.")
+        await message.answer(
+            "Please send at least 2 letters.\n\n"
+            "Example: <code>TEACH</code>"
+        )
+        return
+
+    if len(clean) > 15:
+        await message.answer("Please use 15 letters or fewer for the quickest results.")
         return
 
     if not WORD_LIST:
         await message.answer(
-            "⚠️ I’m ready, but the word list is missing. Add a <code>words.txt</code> file to the bot folder and restart me."
+            "I’m ready to help, but my word list is unavailable right now. "
+            "Please check the bot setup and try again."
         )
         return
 
     results = find_words(clean)
+
     if not results:
+        safe_letters = html.escape(clean.upper())
         await message.answer(
-            f"🔎 I couldn't find a matching word for <code>{clean.upper()}</code>.\n\nTry another set of letters."
+            f"🔎 No matching words found for <code>{safe_letters}</code>.\n\n"
+            "Try a different set of letters."
         )
         return
 
-    formatted = "\n".join(f"• <b>{word.upper()}</b>" for word in results)
+    formatted = "\n".join(f"• <b>{html.escape(word.upper())}</b>" for word in results)
+    safe_letters = html.escape(clean.upper())
+
     await message.answer(
-        f"🔤 <b>Words from {clean.upper()}</b>\n\n{formatted}\n\n"
-        f"Found {len(results)} result(s)."
+        f"🔤 <b>Possible words from {safe_letters}</b>\n\n"
+        f"{formatted}\n\n"
+        "Send another set of letters to continue."
     )
 
 
